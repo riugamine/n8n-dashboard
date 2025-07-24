@@ -118,6 +118,7 @@ CREATE TABLE frequent_questions (
   count integer DEFAULT 1,
   last_asked timestamptz NOT NULL,
   sample_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  timestamp timestamptz NOT NULL,
   created_at timestamptz DEFAULT NOW(),
   updated_at timestamptz DEFAULT NOW()
 );
@@ -126,6 +127,7 @@ CREATE TABLE frequent_questions (
 CREATE INDEX idx_frequent_questions_category ON frequent_questions(question_category);
 CREATE INDEX idx_frequent_questions_count ON frequent_questions(count DESC);
 CREATE INDEX idx_frequent_questions_last_asked ON frequent_questions(last_asked DESC);
+CREATE INDEX idx_frequent_questions_timestamp ON frequent_questions(timestamp DESC);
 
 -- =============================================================================
 -- 6. TABLA PARA MÉTRICAS AGREGADAS (Opcional - para cachear cálculos)
@@ -231,6 +233,218 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Función para calcular tendencias de consultas (últimos N días)
+CREATE OR REPLACE FUNCTION calculate_questions_trend(days_back integer DEFAULT 30)
+RETURNS jsonb AS $$
+DECLARE
+    result jsonb;
+BEGIN
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'date', trend_date::text,
+            'count', daily_count
+        ) ORDER BY trend_date
+    ) INTO result
+    FROM (
+        SELECT 
+            DATE(timestamp) as trend_date,
+            COUNT(*) as daily_count
+        FROM user_interactions 
+        WHERE timestamp >= CURRENT_DATE - INTERVAL '1 day' * days_back
+        GROUP BY DATE(timestamp)
+        ORDER BY trend_date
+    ) trend_data;
+    
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función para calcular tendencias de ejecuciones de workflow
+CREATE OR REPLACE FUNCTION calculate_executions_trend(days_back integer DEFAULT 30)
+RETURNS jsonb AS $$
+DECLARE
+    result jsonb;
+BEGIN
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'date', trend_date::text,
+            'count', daily_count,
+            'success_rate', success_rate
+        ) ORDER BY trend_date
+    ) INTO result
+    FROM (
+        SELECT 
+            DATE(timestamp) as trend_date,
+            COUNT(*) as daily_count,
+            ROUND(
+                (COUNT(*) FILTER (WHERE status = 'success')::decimal / COUNT(*)) * 100, 
+                1
+            ) as success_rate
+        FROM workflow_executions 
+        WHERE timestamp >= CURRENT_DATE - INTERVAL '1 day' * days_back
+        GROUP BY DATE(timestamp)
+        ORDER BY trend_date
+    ) trend_data;
+    
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función para calcular tendencias de citas
+CREATE OR REPLACE FUNCTION calculate_appointments_trend(days_back integer DEFAULT 30)
+RETURNS jsonb AS $$
+DECLARE
+    result jsonb;
+BEGIN
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'date', trend_date::text,
+            'requested', requested_count,
+            'completed', completed_count
+        ) ORDER BY trend_date
+    ) INTO result
+    FROM (
+        SELECT 
+            DATE(timestamp) as trend_date,
+            COUNT(*) as requested_count,
+            COUNT(*) FILTER (WHERE status = 'completed') as completed_count
+        FROM appointments 
+        WHERE timestamp >= CURRENT_DATE - INTERVAL '1 day' * days_back
+        GROUP BY DATE(timestamp)
+        ORDER BY trend_date
+    ) trend_data;
+    
+    RETURN COALESCE(result, '[]'::jsonb);
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función principal para calcular todas las métricas del dashboard
+CREATE OR REPLACE FUNCTION calculate_dashboard_metrics(
+    start_date timestamptz DEFAULT NULL,
+    end_date timestamptz DEFAULT NULL
+)
+RETURNS jsonb AS $$
+DECLARE
+    result jsonb;
+    effective_start_date timestamptz;
+    effective_end_date timestamptz;
+    today_start timestamptz;
+    week_start timestamptz;
+    month_start timestamptz;
+BEGIN
+    -- Definir fechas por defecto si no se proporcionan
+    effective_start_date := COALESCE(start_date, NOW() - INTERVAL '30 days');
+    effective_end_date := COALESCE(end_date, NOW());
+    today_start := DATE_TRUNC('day', NOW());
+    week_start := NOW() - INTERVAL '7 days';
+    month_start := NOW() - INTERVAL '30 days';
+    
+    SELECT jsonb_build_object(
+        -- Métricas de uso general
+        'workflow_executions_today', (
+            SELECT COUNT(*) FROM workflow_executions WHERE timestamp >= today_start
+        ),
+        'workflow_executions_week', (
+            SELECT COUNT(*) FROM workflow_executions WHERE timestamp >= week_start
+        ),
+        'workflow_executions_month', (
+            SELECT COUNT(*) FROM workflow_executions WHERE timestamp >= month_start
+        ),
+        'average_execution_duration', (
+            SELECT COALESCE(AVG(duration_ms), 0)::integer FROM workflow_executions 
+            WHERE timestamp >= today_start
+        ),
+        'failed_executions_today', (
+            SELECT COUNT(*) FROM workflow_executions 
+            WHERE timestamp >= today_start AND status = 'failed'
+        ),
+        'success_rate', (
+            SELECT CASE 
+                WHEN COUNT(*) = 0 THEN 0 
+                ELSE ROUND((COUNT(*) FILTER (WHERE status = 'success')::decimal / COUNT(*)) * 100, 1)
+            END
+            FROM workflow_executions WHERE timestamp >= today_start
+        ),
+        
+        -- Métricas de interacción
+        'total_questions_today', (
+            SELECT COUNT(*) FROM user_interactions WHERE timestamp >= today_start
+        ),
+        'total_questions_week', (
+            SELECT COUNT(*) FROM user_interactions WHERE timestamp >= week_start
+        ),
+        'total_questions_month', (
+            SELECT COUNT(*) FROM user_interactions WHERE timestamp >= month_start
+        ),
+        'appointments_scheduled_today', (
+            SELECT COUNT(*) FROM appointments WHERE timestamp >= today_start
+        ),
+        'appointments_scheduled_week', (
+            SELECT COUNT(*) FROM appointments WHERE timestamp >= week_start
+        ),
+        'appointments_scheduled_month', (
+            SELECT COUNT(*) FROM appointments WHERE timestamp >= month_start
+        ),
+        'unique_users_today', (
+            SELECT COUNT(DISTINCT user_id) FROM user_interactions WHERE timestamp >= today_start
+        ),
+        'unique_users_week', (
+            SELECT COUNT(DISTINCT user_id) FROM user_interactions WHERE timestamp >= week_start
+        ),
+        'unique_users_month', (
+            SELECT COUNT(DISTINCT user_id) FROM user_interactions WHERE timestamp >= month_start
+        ),
+        'average_response_time', (
+            SELECT COALESCE(AVG(response_time_ms), 0)::integer FROM user_interactions 
+            WHERE timestamp >= today_start
+        ),
+        
+        -- Métricas de conversión
+        'appointment_conversion_rate', (
+            SELECT CASE 
+                WHEN COUNT(*) = 0 THEN 0 
+                ELSE ROUND((COUNT(*) FILTER (WHERE status = 'completed')::decimal / COUNT(*)) * 100, 1)
+            END
+            FROM appointments WHERE timestamp >= month_start
+        ),
+        'high_confidence_responses', (
+            SELECT CASE 
+                WHEN COUNT(*) = 0 THEN 0 
+                ELSE ROUND((COUNT(*) FILTER (WHERE confidence_score > 0.8)::decimal / COUNT(*)) * 100, 1)
+            END
+            FROM user_interactions WHERE timestamp >= month_start
+        ),
+        'user_to_appointment_rate', (
+            -- Tasa de usuarios que solicitan citas
+            SELECT CASE 
+                WHEN u_count = 0 THEN 0 
+                ELSE ROUND((a_count::decimal / u_count) * 100, 1)
+            END
+            FROM (
+                SELECT COUNT(DISTINCT user_id) as u_count FROM user_interactions WHERE timestamp >= month_start
+            ) users,
+            (
+                SELECT COUNT(DISTINCT user_id) as a_count FROM appointments WHERE timestamp >= month_start
+            ) appts
+        ),
+        'appointment_completion_rate', (
+            SELECT CASE 
+                WHEN COUNT(*) = 0 THEN 0 
+                ELSE ROUND((COUNT(*) FILTER (WHERE status = 'completed')::decimal / COUNT(*)) * 100, 1)
+            END
+            FROM appointments WHERE timestamp >= month_start
+        ),
+        
+        -- Tendencias
+        'questions_trend', calculate_questions_trend(30),
+        'executions_trend', calculate_executions_trend(30),
+        'appointments_trend', calculate_appointments_trend(30)
+    ) INTO result;
+    
+    RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
 -- =============================================================================
 -- POLÍTICAS DE SEGURIDAD (ROW LEVEL SECURITY)
 -- =============================================================================
@@ -288,22 +502,65 @@ INSERT INTO users (user_id, phone_number, first_interaction, last_interaction, t
 ('user_1', '+1234567890', NOW() - INTERVAL '1 week', NOW() - INTERVAL '1 hour', 3, 1, 0, 'engaged', NOW() - INTERVAL '1 week'),
 ('user_2', '+1234567891', NOW() - INTERVAL '3 days', NOW() - INTERVAL '2 hours', 2, 1, 0, 'engaged', NOW() - INTERVAL '3 days');
 
+-- Insertar preguntas frecuentes de ejemplo
+INSERT INTO frequent_questions (question_pattern, question_category, count, last_asked, sample_questions, timestamp) VALUES
+('horarios', 'informacion_general', 45, NOW() - INTERVAL '2 hours', 
+ '[
+   "¿Cuáles son sus horarios?",
+   "¿A qué hora abren?", 
+   "¿Hasta qué hora atienden?",
+   "Horarios de atención"
+ ]'::jsonb, NOW() - INTERVAL '1 month'),
+('agendar_cita', 'citas', 38, NOW() - INTERVAL '1 hour',
+ '[
+   "¿Cómo puedo agendar una cita?",
+   "Quiero una cita",
+   "Necesito agendar", 
+   "¿Hay disponibilidad?"
+ ]'::jsonb, NOW() - INTERVAL '3 weeks'),
+('servicios', 'informacion_general', 32, NOW() - INTERVAL '3 hours',
+ '[
+   "¿Qué servicios ofrecen?",
+   "¿Qué especialidades tienen?",
+   "Lista de servicios",
+   "¿Qué médicos hay?"
+ ]'::jsonb, NOW() - INTERVAL '2 weeks'),
+('ubicacion', 'informacion_general', 28, NOW() - INTERVAL '30 minutes',
+ '[
+   "¿Dónde están ubicados?",
+   "Dirección del consultorio",
+   "¿Cómo llegar?",
+   "Ubicación"
+ ]'::jsonb, NOW() - INTERVAL '10 days'),
+('precios', 'costos', 25, NOW() - INTERVAL '4 hours',
+ '[
+   "¿Cuánto cuesta?",
+   "Precio de consulta", 
+   "¿Cuáles son sus tarifas?",
+   "Costos de servicios"
+ ]'::jsonb, NOW() - INTERVAL '1 week');
+
 -- =============================================================================
 -- COMENTARIOS FINALES
 -- =============================================================================
 
 -- Este schema proporciona:
--- 1. Tablas especializadas para cada tipo de métrica
--- 2. Índices optimizados para consultas frecuentes
+-- 1. Tablas especializadas para cada tipo de métrica (alineadas con mock data)
+-- 2. Índices optimizados para consultas frecuentes y tendencias
 -- 3. Restricciones de integridad y validación
--- 4. Funciones para calcular métricas agregadas
--- 5. Sistema de cache para métricas pesadas
--- 6. Políticas de seguridad básicas
--- 7. Triggers para mantenimiento automático
--- 8. Datos de ejemplo para testing
+-- 4. Funciones para calcular métricas agregadas del dashboard
+-- 5. Funciones especializadas para calcular tendencias temporales
+-- 6. Sistema de cache para métricas pesadas
+-- 7. Políticas de seguridad básicas
+-- 8. Triggers para mantenimiento automático
+-- 9. Datos de ejemplo completos para testing
+-- 10. Función principal calculate_dashboard_metrics() compatible con el API
 
 -- Para usar en producción:
 -- 1. Ajustar las políticas RLS según tus necesidades de seguridad
 -- 2. Configurar backups automáticos
 -- 3. Monitorear el performance de las consultas
--- 4. Considerar particionado para tablas grandes (por fecha) 
+-- 4. Considerar particionado para tablas grandes (por fecha)
+-- 5. Usar la función calculate_dashboard_metrics() para obtener todas las métricas:
+--    SELECT calculate_dashboard_metrics(); -- Últimos 30 días
+--    SELECT calculate_dashboard_metrics('2024-01-01'::timestamptz, '2024-01-31'::timestamptz); -- Rango específico 
