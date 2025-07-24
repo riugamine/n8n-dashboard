@@ -1,5 +1,5 @@
 // =============================================================================
-// TIPOS DE DATOS PARA MÉTRICAS DEL ASISTENTE N8N
+// TIPOS DE DATOS SIMPLIFICADOS PARA MÉTRICAS DEL ASISTENTE N8N
 // =============================================================================
 
 export interface BaseMetric {
@@ -9,7 +9,7 @@ export interface BaseMetric {
 }
 
 // =============================================================================
-// 1. MÉTRICAS DE USO GENERAL
+// 1. MÉTRICAS DE EJECUCIÓN DE FLUJO
 // =============================================================================
 
 export interface WorkflowExecution extends BaseMetric {
@@ -35,7 +35,7 @@ export interface WorkflowStats {
 }
 
 // =============================================================================
-// 2. MÉTRICAS DE INTERACCIÓN
+// 2. MÉTRICAS DE INTERACCIÓN (con tracking de citas simplificado)
 // =============================================================================
 
 export interface UserInteraction extends BaseMetric {
@@ -48,32 +48,15 @@ export interface UserInteraction extends BaseMetric {
   intent_detected?: string
   session_id: string
   interaction_type: 'question' | 'appointment_request' | 'followup'
-}
-
-export interface FrequentQuestion extends BaseMetric {
-  id?: number
-  question_pattern: string
-  question_category: string
-  count: number
-  last_asked: string
-  sample_questions: string[]
+  // Campos para tracking de citas simplificado
+  appointment_requested: boolean
+  appointment_confirmed: boolean
+  appointment_completed: boolean
 }
 
 // =============================================================================
-// 3. MÉTRICAS DE CONVERSIÓN
+// 3. MÉTRICAS DE CONVERSIÓN SIMPLIFICADAS
 // =============================================================================
-
-export interface Appointment extends BaseMetric {
-  appointment_id: string
-  user_id: string
-  phone_number?: string
-  requested_date: string
-  confirmed_date?: string
-  appointment_type: string
-  status: 'requested' | 'confirmed' | 'completed' | 'canceled' | 'no_show'
-  notes?: string
-  source_interaction_id?: string
-}
 
 export interface User extends BaseMetric {
   user_id: string
@@ -82,54 +65,79 @@ export interface User extends BaseMetric {
   last_interaction: string
   total_interactions: number
   appointments_requested: number
+  appointments_confirmed: number
   appointments_completed: number
   conversion_status: 'new' | 'engaged' | 'converted' | 'churned'
 }
 
 // =============================================================================
-// MÉTRICAS AGREGADAS PARA DASHBOARD
+// MÉTRICAS AGREGADAS PARA DASHBOARD (Las 9 métricas esenciales)
 // =============================================================================
 
 export interface DashboardMetrics {
-  // Uso general
-  workflow_executions_today: number
-  workflow_executions_week: number
-  workflow_executions_month: number
-  average_execution_duration: number
-  failed_executions_today: number
-  success_rate: number
+  // 1. Número de veces que se ejecutó el flow
+  total_executions_today: number
+  total_executions_week: number
+  total_executions_month: number
 
-  // Interacción
+  // 2. Cantidad de ejecuciones fallidas
+  failed_executions_today: number
+  failed_executions_week: number
+  failed_executions_month: number
+
+  // 3. Tasa de éxito de flujo
+  success_rate_today: number
+  success_rate_week: number
+  success_rate_month: number
+
+  // 4. Total de preguntas recibidas
   total_questions_today: number
   total_questions_week: number
   total_questions_month: number
-  appointments_scheduled_today: number
-  appointments_scheduled_week: number
-  appointments_scheduled_month: number
+
+  // 5. Usuarios atendidos
   unique_users_today: number
   unique_users_week: number
   unique_users_month: number
-  average_response_time: number
 
-  // Conversión
-  appointment_conversion_rate: number
-  high_confidence_responses: number
-  user_to_appointment_rate: number
-  appointment_completion_rate: number
+  // 6. Cantidad de citas agendadas
+  appointments_requested_today: number
+  appointments_requested_week: number
+  appointments_requested_month: number
 
-  // Tendencias
-  questions_trend: Array<{date: string, count: number}>
-  executions_trend: Array<{date: string, count: number, success_rate: number}>
-  appointments_trend: Array<{date: string, requested: number, completed: number}>
+  // 7. Tiempo promedio de respuesta
+  average_response_time_today: number
+  average_response_time_week: number
+  average_response_time_month: number
+
+  // 8. Tasa de completación de citas (citas concretadas / citas solicitadas)
+  appointment_completion_rate_month: number
+
+  // 9. Tasa de conversión (usuarios → cita agendada)
+  user_conversion_rate_month: number
+
+  // Tendencias simplificadas (últimos 30 días)
+  executions_trend: Array<{
+    date: string
+    total: number
+    success_rate: number
+  }>
+  
+  questions_trend: Array<{
+    date: string
+    questions: number
+    users: number
+    appointments: number
+  }>
 }
 
 // =============================================================================
-// TIPOS PARA API
+// TIPOS PARA API SIMPLIFICADOS
 // =============================================================================
 
 export interface MetricPayload {
-  type: 'workflow_execution' | 'user_interaction' | 'appointment' | 'user_update' | 'frequent_question'
-  data: WorkflowExecution | UserInteraction | Appointment | User | FrequentQuestion
+  type: 'workflow_execution' | 'user_interaction' | 'user_update'
+  data: WorkflowExecution | UserInteraction | User
   timestamp?: string
 }
 
@@ -149,4 +157,25 @@ export interface MetricQuery {
   status?: string
   limit?: number
   offset?: number
+}
+
+// =============================================================================
+// TIPOS PARA FUNCIONES DE MÉTRICAS
+// =============================================================================
+
+export interface ExecutionMetrics {
+  total_executions: number
+  successful_executions: number
+  failed_executions: number
+  success_rate: number
+  average_duration_ms: number
+}
+
+export interface InteractionMetrics {
+  total_questions: number
+  unique_users: number
+  appointments_requested: number
+  appointments_completed: number
+  average_response_time_ms: number
+  conversion_rate: number
 } 

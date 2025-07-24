@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
 
     const currentTimestamp = timestamp || new Date().toISOString()
 
-    // Determinar tabla de destino según el tipo
+    // Determinar tabla de destino según el tipo (solo tablas existentes en el schema simplificado)
     let insertResult;
     let tableName: string;
 
@@ -52,18 +52,6 @@ export async function POST(request: NextRequest) {
           .select()
         break
 
-      case 'appointment':
-        tableName = 'appointments'
-        insertResult = await supabase
-          .from(tableName)
-          .insert([{
-            ...data,
-            timestamp: currentTimestamp,
-            created_at: currentTimestamp,
-          }])
-          .select()
-        break
-
       case 'user_update':
         tableName = 'users'
         // Para usuarios, usar upsert para actualizar si existe
@@ -75,19 +63,6 @@ export async function POST(request: NextRequest) {
             created_at: currentTimestamp,
           }], {
             onConflict: 'user_id'
-          })
-          .select()
-        break
-
-      case 'frequent_question':
-        tableName = 'frequent_questions'
-        insertResult = await supabase
-          .from(tableName)
-          .upsert([{
-            ...data,
-            updated_at: currentTimestamp,
-          }], {
-            onConflict: 'question_pattern'
           })
           .select()
         break
@@ -177,7 +152,7 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // Determinar tabla según el tipo
+    // Determinar tabla según el tipo (solo tablas existentes)
     let tableName: string
     let query
 
@@ -195,22 +170,10 @@ export async function GET(request: NextRequest) {
         if (userId) query = query.eq('user_id', userId)
         break
 
-      case 'appointment':
-        tableName = 'appointments'
-        query = supabase.from(tableName).select('*')
-        if (userId) query = query.eq('user_id', userId)
-        if (status) query = query.eq('status', status)
-        break
-
       case 'user':
         tableName = 'users'
         query = supabase.from(tableName).select('*')
         if (userId) query = query.eq('user_id', userId)
-        break
-
-      case 'frequent_question':
-        tableName = 'frequent_questions'
-        query = supabase.from(tableName).select('*').order('count', { ascending: false })
         break
 
       default:
@@ -258,46 +221,144 @@ export async function GET(request: NextRequest) {
 }
 
 // =============================================================================
-// FUNCIÓN HELPER PARA CALCULAR MÉTRICAS DEL DASHBOARD
+// PUT - REPORTAR WORKFLOW FALLIDO (Método específico para errores)
+// =============================================================================
+
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json()
+    
+    // Validar datos específicos para workflow fallido
+    const { 
+      workflow_id, 
+      workflow_name, 
+      execution_id, 
+      error_message, 
+      duration_ms, 
+      node_count 
+    } = body
+    
+    if (!workflow_id || !execution_id || !error_message) {
+      return NextResponse.json(
+        { error: 'Faltan campos requeridos: workflow_id, execution_id, error_message' },
+        { status: 400 }
+      )
+    }
+
+    const currentTimestamp = new Date().toISOString()
+    
+    // Insertar workflow fallido
+    const insertResult = await supabase
+      .from('workflow_executions')
+      .insert([{
+        workflow_id,
+        workflow_name: workflow_name || 'Workflow N8N',
+        execution_id,
+        status: 'failed',
+        duration_ms: duration_ms || 0,
+        start_time: currentTimestamp,
+        end_time: currentTimestamp,
+        error_message,
+        node_count: node_count || 0,
+        timestamp: currentTimestamp,
+        created_at: currentTimestamp,
+      }])
+      .select()
+
+    if (insertResult.error) {
+      console.error('Error reportando workflow fallido:', insertResult.error)
+      return NextResponse.json(
+        { error: 'Error interno del servidor' },
+        { status: 500 }
+      )
+    }
+
+    // Log para debugging
+    console.log(`Workflow fallido reportado: ${execution_id} - ${error_message}`)
+
+    return NextResponse.json(
+      { 
+        success: true, 
+        message: 'Workflow fallido reportado correctamente',
+        data: insertResult.data 
+      },
+      { status: 201 }
+    )
+
+  } catch (error) {
+    console.error('Error procesando reporte de workflow fallido:', error)
+    return NextResponse.json(
+      { error: 'Error interno del servidor' },
+      { status: 500 }
+    )
+  }
+}
+
+// =============================================================================
+// FUNCIÓN HELPER PARA CALCULAR MÉTRICAS DEL DASHBOARD (Actualizada)
 // =============================================================================
 
 async function calculateDashboardMetrics(startDate?: string, endDate?: string) {
   try {
-    // TODO: Implementar filtros de fecha personalizados con startDate y endDate
-    const today = new Date().toISOString().split('T')[0]
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const todayString = today.toISOString()
+    
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
     
-    // Usar fechas por defecto por ahora, implementación personalizada próximamente
+    // Usar fechas por defecto si no se proporcionan
     const effectiveStartDate = startDate || monthAgo
     const effectiveEndDate = endDate || new Date().toISOString()
     
-    // Variables para futura implementación de filtros personalizados
     console.log(`Calculando métricas desde ${effectiveStartDate} hasta ${effectiveEndDate}`)
 
-    // Si no hay conexión a Supabase (usando placeholders), devolver datos mock
+    // Comprobar conexión a Supabase
     const testConnection = await supabase.from('workflow_executions').select('id').limit(1)
     if (testConnection.error) {
       console.log('No hay conexión a Supabase, usando datos mock')
       return mockDashboardMetrics
     }
 
-    // Calcular métricas reales
+    // Usar la función nativa de PostgreSQL para calcular métricas
+    const { data: metricsData, error: metricsError } = await supabase
+      .rpc('calculate_dashboard_metrics', {
+        start_date: effectiveStartDate,
+        end_date: effectiveEndDate
+      })
+
+    if (metricsError) {
+      console.error('Error llamando función calculate_dashboard_metrics:', metricsError)
+      // Fallback a cálculo manual
+      return await calculateMetricsManually(todayString, weekAgo, monthAgo)
+    }
+
+    return metricsData || mockDashboardMetrics
+
+  } catch (error) {
+    console.error('Error calculando métricas del dashboard:', error)
+    return mockDashboardMetrics
+  }
+}
+
+// =============================================================================
+// FUNCIÓN HELPER PARA CÁLCULO MANUAL DE MÉTRICAS (Fallback)
+// =============================================================================
+
+async function calculateMetricsManually(todayString: string, weekAgo: string, monthAgo: string) {
+  try {
     const [
       workflowToday,
       workflowWeek,
       workflowMonth,
       interactionsToday,
       interactionsWeek,
-      interactionsMonth,
-      appointmentsToday,
-      appointmentsWeek,
-      appointmentsMonth
+      interactionsMonth
     ] = await Promise.all([
       // Workflows
       supabase.from('workflow_executions')
         .select('status, duration_ms')
-        .gte('timestamp', today),
+        .gte('timestamp', todayString),
       supabase.from('workflow_executions')
         .select('status, duration_ms')
         .gte('timestamp', weekAgo),
@@ -305,26 +366,15 @@ async function calculateDashboardMetrics(startDate?: string, endDate?: string) {
         .select('status, duration_ms')
         .gte('timestamp', monthAgo),
       
-      // Interacciones
+      // Interacciones (con tracking de citas simplificado)
       supabase.from('user_interactions')
-        .select('user_id, response_time_ms, confidence_score')
-        .gte('timestamp', today),
+        .select('user_id, response_time_ms, appointment_requested, appointment_confirmed, appointment_completed')
+        .gte('timestamp', todayString),
       supabase.from('user_interactions')
-        .select('user_id, response_time_ms, confidence_score')
+        .select('user_id, response_time_ms, appointment_requested, appointment_confirmed, appointment_completed')
         .gte('timestamp', weekAgo),
       supabase.from('user_interactions')
-        .select('user_id, response_time_ms, confidence_score')
-        .gte('timestamp', monthAgo),
-      
-      // Citas
-      supabase.from('appointments')
-        .select('status, user_id')
-        .gte('timestamp', today),
-      supabase.from('appointments')
-        .select('status, user_id')
-        .gte('timestamp', weekAgo),
-      supabase.from('appointments')
-        .select('status, user_id')
+        .select('user_id, response_time_ms, appointment_requested, appointment_confirmed, appointment_completed')
         .gte('timestamp', monthAgo),
     ])
 
@@ -336,59 +386,72 @@ async function calculateDashboardMetrics(startDate?: string, endDate?: string) {
     const interactionsTodayData = interactionsToday.data || []
     const interactionsWeekData = interactionsWeek.data || []
     const interactionsMonthData = interactionsMonth.data || []
-    
-    const appointmentsTodayData = appointmentsToday.data || []
-    const appointmentsWeekData = appointmentsWeek.data || []
-    const appointmentsMonthData = appointmentsMonth.data || []
 
     return {
-      // Uso general
-      workflow_executions_today: workflowTodayData.length,
-      workflow_executions_week: workflowWeekData.length,
-      workflow_executions_month: workflowMonthData.length,
-      average_execution_duration: workflowTodayData.length > 0 
-        ? Math.round(workflowTodayData.reduce((sum, w) => sum + (w.duration_ms || 0), 0) / workflowTodayData.length)
-        : 0,
+      // 1. Número de ejecuciones del flujo
+      total_executions_today: workflowTodayData.length,
+      total_executions_week: workflowWeekData.length,
+      total_executions_month: workflowMonthData.length,
+
+      // 2. Ejecuciones fallidas
       failed_executions_today: workflowTodayData.filter(w => w.status === 'failed').length,
-      success_rate: workflowTodayData.length > 0
+      failed_executions_week: workflowWeekData.filter(w => w.status === 'failed').length,
+      failed_executions_month: workflowMonthData.filter(w => w.status === 'failed').length,
+
+      // 3. Tasa de éxito del flujo
+      success_rate_today: workflowTodayData.length > 0
         ? Math.round((workflowTodayData.filter(w => w.status === 'success').length / workflowTodayData.length) * 100 * 10) / 10
         : 0,
+      success_rate_week: workflowWeekData.length > 0
+        ? Math.round((workflowWeekData.filter(w => w.status === 'success').length / workflowWeekData.length) * 100 * 10) / 10
+        : 0,
+      success_rate_month: workflowMonthData.length > 0
+        ? Math.round((workflowMonthData.filter(w => w.status === 'success').length / workflowMonthData.length) * 100 * 10) / 10
+        : 0,
 
-      // Interacción
+      // 4. Total de preguntas recibidas
       total_questions_today: interactionsTodayData.length,
       total_questions_week: interactionsWeekData.length,
       total_questions_month: interactionsMonthData.length,
-      appointments_scheduled_today: appointmentsTodayData.length,
-      appointments_scheduled_week: appointmentsWeekData.length,
-      appointments_scheduled_month: appointmentsMonthData.length,
+
+      // 5. Usuarios atendidos
       unique_users_today: new Set(interactionsTodayData.map(i => i.user_id)).size,
       unique_users_week: new Set(interactionsWeekData.map(i => i.user_id)).size,
       unique_users_month: new Set(interactionsMonthData.map(i => i.user_id)).size,
-      average_response_time: interactionsTodayData.length > 0
+
+      // 6. Cantidad de citas agendadas
+      appointments_requested_today: interactionsTodayData.filter(i => i.appointment_requested).length,
+      appointments_requested_week: interactionsWeekData.filter(i => i.appointment_requested).length,
+      appointments_requested_month: interactionsMonthData.filter(i => i.appointment_requested).length,
+
+      // 7. Tiempo promedio de respuesta
+      average_response_time_today: interactionsTodayData.length > 0
         ? Math.round(interactionsTodayData.reduce((sum, i) => sum + (i.response_time_ms || 0), 0) / interactionsTodayData.length)
         : 0,
+      average_response_time_week: interactionsWeekData.length > 0
+        ? Math.round(interactionsWeekData.reduce((sum, i) => sum + (i.response_time_ms || 0), 0) / interactionsWeekData.length)
+        : 0,
+      average_response_time_month: interactionsMonthData.length > 0
+        ? Math.round(interactionsMonthData.reduce((sum, i) => sum + (i.response_time_ms || 0), 0) / interactionsMonthData.length)
+        : 0,
 
-      // Conversión
-      appointment_conversion_rate: appointmentsMonthData.length > 0
-        ? Math.round((appointmentsMonthData.filter(a => a.status === 'completed').length / appointmentsMonthData.length) * 100 * 10) / 10
+      // 8. Tasa de completación de citas
+      appointment_completion_rate_month: interactionsMonthData.filter(i => i.appointment_requested).length > 0
+        ? Math.round((interactionsMonthData.filter(i => i.appointment_completed).length / interactionsMonthData.filter(i => i.appointment_requested).length) * 100 * 10) / 10
         : 0,
-      high_confidence_responses: interactionsMonthData.length > 0
-        ? Math.round((interactionsMonthData.filter(i => (i.confidence_score || 0) > 0.8).length / interactionsMonthData.length) * 100 * 10) / 10
-        : 0,
-      user_to_appointment_rate: 0, // Requiere cálculo más complejo
-      appointment_completion_rate: appointmentsMonthData.length > 0
-        ? Math.round((appointmentsMonthData.filter(a => a.status === 'completed').length / appointmentsMonthData.length) * 100 * 10) / 10
+
+      // 9. Tasa de conversión (usuarios → cita agendada)
+      user_conversion_rate_month: interactionsMonthData.length > 0
+        ? Math.round((new Set(interactionsMonthData.filter(i => i.appointment_requested).map(i => i.user_id)).size / new Set(interactionsMonthData.map(i => i.user_id)).size) * 100 * 10) / 10
         : 0,
 
       // Tendencias (usando datos mock por ahora - requiere consultas más complejas)
-      questions_trend: mockDashboardMetrics.questions_trend,
       executions_trend: mockDashboardMetrics.executions_trend,
-      appointments_trend: mockDashboardMetrics.appointments_trend
+      questions_trend: mockDashboardMetrics.questions_trend
     }
 
   } catch (error) {
-    console.error('Error calculando métricas del dashboard:', error)
-    // Fallback a datos mock en caso de error
+    console.error('Error en cálculo manual de métricas:', error)
     return mockDashboardMetrics
   }
 } 
