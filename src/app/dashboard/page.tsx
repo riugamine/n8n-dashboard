@@ -19,30 +19,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
-// Helper function para parsear fechas de forma segura
-const safeParseDate = (dateString: string, fallback: string): string => {
-  if (!dateString || typeof dateString !== 'string') {
-    return fallback
-  }
-  
-  try {
-    // Intentar parsear la fecha con diferentes formatos
-    const date = new Date(dateString + 'T00:00:00')
-    if (!isNaN(date.getTime())) {
-      return date.toLocaleDateString('es-ES', { weekday: 'short' })
-    }
-    
-    // Si falla, intentar parsear sin la hora
-    const date2 = new Date(dateString)
-    if (!isNaN(date2.getTime())) {
-      return date2.toLocaleDateString('es-ES', { weekday: 'short' })
-    }
-  } catch (error) {
-    console.warn('Error parsing date:', dateString, error)
-  }
-  
-  return fallback
-}
+
 
 // Helper para formatear fecha día/mes
 const safeFormatDayMonth = (dateString: string, fallback: string): string => {
@@ -68,7 +45,7 @@ const safeFormatDayMonth = (dateString: string, fallback: string): string => {
 }
 
 export default function DashboardPage() {
-  const { data: metricsData, isLoading: metricsLoading, error: metricsError } = useDashboardMetrics()
+  const { data: metricsData, isLoading: metricsLoading, error: metricsError } = useDashboardMetrics(true) // Habilitar mock data con polling inteligente
   const [currentTime, setCurrentTime] = useState<string>('')
   const [isClient, setIsClient] = useState(false)
   
@@ -175,12 +152,12 @@ export default function DashboardPage() {
           </p>
         </div>
         
-        {/* Status Badge - Responsive */}
-        <div className="flex items-center gap-2 text-xs sm:text-sm text-muted-foreground bg-muted/50 px-3 py-2 rounded-lg self-start lg:self-center">
-          <Activity className="h-3 w-3 sm:h-4 sm:w-4" />
-          <span className="hidden sm:inline">Actualizado hace un momento</span>
-          <span className="sm:hidden">Actualizado</span>
-        </div>
+                 {/* Status Badge - Responsive */}
+         <div className="flex items-center gap-2 text-xs sm:text-sm text-muted-foreground bg-muted/50 px-3 py-2 rounded-lg self-start lg:self-center">
+           <Activity className="h-3 w-3 sm:h-4 sm:w-4" />
+           <span className="hidden sm:inline">Actualizado cada 30 segundos</span>
+           <span className="sm:hidden">Auto-actualización</span>
+         </div>
       </div>
 
       {/* Bento Grid Layout Optimizado */}

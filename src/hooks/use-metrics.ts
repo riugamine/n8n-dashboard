@@ -11,7 +11,7 @@ interface MetricsResponse {
 
 /**
  * Hook personalizado para obtener las métricas del dashboard
- * Utiliza React Query para caché y manejo de estados
+ * Utiliza React Query para caché y polling inteligente cada 30 segundos
  */
 export const useDashboardMetrics = (useMockData: boolean = true) => {
   return useQuery<MetricsResponse>({
@@ -30,7 +30,7 @@ export const useDashboardMetrics = (useMockData: boolean = true) => {
       return response.json()
     },
     staleTime: 5 * 60 * 1000, // 5 minutos
-    refetchInterval: 30 * 1000, // Actualizar cada 30 segundos
+    refetchInterval: 30 * 1000, // Polling inteligente cada 30 segundos
     retry: 2,
   })
 }
