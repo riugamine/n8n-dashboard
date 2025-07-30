@@ -38,7 +38,8 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
       // Redirigir al dashboard
       router.push('/dashboard')
       onClose()
-    } catch (err) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (_) {
       setError('Error al iniciar sesión. Inténtalo de nuevo.')
     } finally {
       setIsLoading(false)
